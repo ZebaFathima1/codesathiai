@@ -1,0 +1,15 @@
+{
+  "name": "shopeasy-api",
+  "version": "1.2.0",
+  "description": "Bundled sample repository for CodeSathi AI",
+  "scripts": {
+    "start": "python app.py",
+    "test": "pytest"
+  },
+  "dependencies": {
+    "flask": ">=3.0",
+    "sqlalchemy": ">=2.0",
+    "pyjwt": ">=2.8",
+    "bcrypt": ">=4.1"
+  }
+}

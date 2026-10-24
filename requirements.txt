@@ -1,0 +1,11 @@
+# Runtime dependencies for the Vercel Python function.
+#
+# Kept deliberately small and free of native builds:
+#   * pg8000 is a pure-Python Postgres driver, so no compiler is needed.
+#   * passwords use hashlib.pbkdf2_hmac from the standard library, not bcrypt.
+# Both choices exist so a Vercel build cannot fail on a platform wheel.
+Flask>=3.0,<4.0
+Flask-Cors>=4.0
+SQLAlchemy>=2.0
+pg8000>=1.30
+sarvamai>=0.1.37

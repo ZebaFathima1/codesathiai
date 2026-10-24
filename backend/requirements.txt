@@ -1,0 +1,7 @@
+Flask>=3.0,<4.0
+Flask-Cors>=4.0
+python-dotenv>=1.0
+sarvamai>=0.1.37
+SQLAlchemy>=2.0
+pg8000>=1.30
+pytest>=8.0

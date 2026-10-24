@@ -1,0 +1,17 @@
+# Keep the deployment bundle small and free of anything not needed at runtime.
+# Note: no blanket *.md rule — the bundled sample project contains a README.md
+# that is part of the indexed repository.
+frontend/node_modules
+frontend/dist
+backend/tests
+backend/.venv
+backend/*.db
+docs
+*.zip
+**/__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.git
+.github
+HACKATHON_PITCH.md
