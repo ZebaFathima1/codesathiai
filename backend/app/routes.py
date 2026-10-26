@@ -37,7 +37,7 @@ from .errors import (
     ValidationError,
 )
 from .models import User
-from .retrieval import Retriever
+from .retrieval import Retriever, looks_like_overview
 from .sarvam_client import SarvamClient
 
 log = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ def _frontend_base() -> str:
 @api.get("/health")
 def health():
     """Liveness plus configuration status. Never reveals a secret."""
-    from .db import get_engine
+    from .db import get_engine, storage_is_ephemeral
     return jsonify({
         "status": "ok",
         "service": "codesathi-ai",
@@ -127,6 +127,7 @@ def health():
         },
         "storage": {
             "backend": get_engine().url.drivername,
+            "ephemeral": storage_is_ephemeral(),
             "max_stored_bytes": config.MAX_STORED_BYTES,
             "upload_batch_bytes": config.UPLOAD_BATCH_BYTES,
         },
@@ -239,7 +240,8 @@ def google_start():
     response.set_cookie(
         config.OAUTH_STATE_COOKIE, state,
         max_age=config.OAUTH_STATE_TTL_SECONDS,
-        httponly=True, secure=config.COOKIE_SECURE, samesite="Lax", path="/",
+        httponly=True, secure=config.COOKIE_SECURE,
+        samesite=config.COOKIE_SAMESITE, path="/",
     )
     return response
 
@@ -512,6 +514,70 @@ def delete_project(project_id: str):
 # ---------------------------------------------------------------------------
 # Ask
 # ---------------------------------------------------------------------------
+def _parse_focus(body: dict, index: CodeIndex) -> dict | None:
+    """The file (and optional selection) the user is looking at.
+
+    The client sends this so an anaphoric question — "explain this" — has a
+    subject. A stale path is ignored rather than rejected: the user may have
+    switched project between opening the file and asking.
+    """
+    raw = body.get("focus")
+    if not isinstance(raw, dict):
+        return None
+    path = str(raw.get("path") or "").replace("\\", "/").strip()
+    if not path or index.get(path) is None:
+        return None
+
+    def _int(value) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "path": path,
+        "start_line": _int(raw.get("start_line")),
+        "end_line": _int(raw.get("end_line")),
+    }
+
+
+def _last_user_question(history, current: str) -> str | None:
+    """The most recent earlier question, so a follow-up inherits its terms."""
+    for turn in reversed(history or []):
+        if not isinstance(turn, dict) or turn.get("role") != "user":
+            continue
+        content = (turn.get("content") or "").strip()
+        if content and content != current:
+            return content
+    return None
+
+
+def _context_note(mode: str, retrieval, previous_question: str | None) -> str | None:
+    """Tell the model what the question is actually pointing at."""
+    if mode == "focus":
+        first = retrieval.snippets[0]
+        return (
+            f"Context: the user is asking about `{first.path}` lines "
+            f"{first.start_line}-{first.end_line}, which they have open in the "
+            f"code viewer. Treat that code as the subject of the question."
+        )
+    if mode == "previous":
+        return (
+            f"Context: this is a follow-up to the earlier question "
+            f"{previous_question!r}. The snippets were retrieved for that "
+            f"earlier question, so answer the follow-up about them."
+        )
+    if mode == "overview":
+        return (
+            "Context: the question is about the project as a whole and the "
+            "snippets are an overview (README, entry points, configuration). "
+            "Describe what the project does, its main entry points and how it "
+            "is organised. The instruction to ignore unrelated snippets does "
+            "not apply to this overview question."
+        )
+    return None
+
+
 @api.post("/projects/<project_id>/ask")
 def ask(project_id: str):
     """Retrieve evidence for a question and ask Sarvam to explain it."""
@@ -543,8 +609,46 @@ def ask(project_id: str):
         repository.touch(project)
         index = repository.build_index(db, project)
 
+        focus = _parse_focus(body, index)
+
         retriever = Retriever(index)
         retrieval = retriever.retrieve(question)
+        mode = "question" if retrieval.snippets else "none"
+        context: dict = {"mode": mode}
+        suggestions = retriever.suggestions()
+
+        # A question such as "explain this" carries no searchable term. Rather
+        # than give up before the model is even called, resolve it against the
+        # code the user is looking at, then the previous turn, and only then
+        # against the project as a whole.
+        # Only a question that names *nothing* is anaphoric enough to answer
+        # from the open file. A question that names a symbol the repository
+        # does not contain ("zzzqqqxyw") is a genuine miss: it must stay a
+        # dead end with suggestions rather than be answered about some file.
+        if mode == "none" and focus and not retrieval.terms:
+            retrieval = retriever.retrieve_focus(
+                focus["path"], focus["start_line"], focus["end_line"]
+            )
+            if retrieval.snippets:
+                mode = "focus"
+                first = retrieval.snippets[0]
+                context = {"mode": mode, "path": first.path,
+                           "start_line": first.start_line,
+                           "end_line": first.end_line}
+
+        if mode == "none":
+            previous = _last_user_question(history, question)
+            if previous:
+                retrieval = retriever.retrieve(previous)
+                if retrieval.snippets:
+                    mode = "previous"
+                    context = {"mode": mode, "question": previous}
+
+        if mode == "none" and looks_like_overview(question):
+            retrieval = retriever.retrieve_overview()
+            if retrieval.snippets:
+                mode = "overview"
+                context = {"mode": mode}
 
         if not retrieval.snippets:
             return jsonify({
@@ -559,7 +663,8 @@ def ask(project_id: str):
                 "uncertainty": ("No relevant source code was found for that "
                                 "question in this project. Try naming a file, "
                                 "function, or feature such as 'login' or "
-                                "'database'."),
+                                "'database', or open a file and ask "
+                                "'explain this'."),
                 "followups": [],
                 "evidence": [],
                 "retrieval_terms": retrieval.terms,
@@ -568,8 +673,13 @@ def ask(project_id: str):
                 "structured": False,
                 "truncated": False,
                 "sarvam_called": False,
+                "context": context,
+                "suggestions": suggestions,
             }), 200
 
+        # The note travels with the retrieval, so the client interface stays
+        # the same as it was before the fallbacks existed.
+        retrieval.note = _context_note(mode, retrieval, context.get("question")) or ""
         result = SarvamClient().answer(question, language, retrieval,
                                        history=history or [])
 
@@ -619,6 +729,8 @@ def ask(project_id: str):
             "structured": bool(structured),
             "truncated": bool(result.get("truncated")),
             "sarvam_called": True,
+            "context": context,
+            "suggestions": suggestions,
         }), 200
 
 

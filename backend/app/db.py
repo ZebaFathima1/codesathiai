@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -36,13 +37,36 @@ _SessionLocal: sessionmaker | None = None
 _initialised = False
 
 
+def _default_sqlite_path() -> str:
+    """Pick a writable place for the SQLite file.
+
+    ``DATABASE_URL`` is optional: without it everything is kept in SQLite. A
+    host whose working directory is read-only would otherwise fail at the first
+    signup, so the temp directory is used as a fallback rather than crashing.
+    """
+    explicit = (os.environ.get("SQLITE_PATH") or "").strip()
+    if explicit:
+        return explicit
+
+    candidate = os.path.join(os.getcwd(), "codesathi.db")
+    probe = os.path.join(os.path.dirname(candidate) or ".", ".codesathi-write-test")
+    try:
+        with open(probe, "w", encoding="utf-8"):
+            pass
+        os.remove(probe)
+        return candidate
+    except OSError:
+        fallback = os.path.join(tempfile.gettempdir(), "codesathi.db")
+        log.warning("Working directory is not writable; keeping SQLite at %s", fallback)
+        return fallback
+
+
 def database_url() -> str:
     """Resolve the database URL for this environment."""
     raw = (os.environ.get("DATABASE_URL") or "").strip()
     if not raw:
-        # Local development: a file next to the backend.
-        path = os.environ.get("SQLITE_PATH", os.path.join(os.getcwd(), "codesathi.db"))
-        return f"sqlite:///{path}"
+        # No database configured: a SQLite file, created automatically.
+        return f"sqlite:///{_default_sqlite_path()}"
     # Hosted providers hand out `postgres://`, which SQLAlchemy no longer maps.
     if raw.startswith("postgres://"):
         raw = raw.replace("postgres://", "postgresql+pg8000://", 1)
@@ -85,6 +109,20 @@ def _build_engine(url: str) -> Engine:
         max_overflow=2,
         connect_args=connect_args,
     )
+
+
+def storage_is_ephemeral() -> bool:
+    """True when accounts and projects live somewhere a restart will erase.
+
+    A SQLite file on a hosted instance is real but temporary: the container's
+    filesystem is replaced whenever it restarts or wakes from sleep. The health
+    endpoint reports this so the UI can say so, instead of leaving a signed-out
+    user wondering what happened.
+    """
+    if not database_url().startswith("sqlite"):
+        return False
+    hosted = any(os.environ.get(name) for name in ("RENDER", "VERCEL", "DYNO", "FLY_APP_NAME"))
+    return hosted
 
 
 def get_engine() -> Engine:

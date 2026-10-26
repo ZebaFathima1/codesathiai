@@ -1,5 +1,7 @@
 """Tests for citation validation."""
 
+import pytest
+
 from app.citations import (
     Citation,
     locate_quote,
@@ -180,3 +182,41 @@ def test_citation_with_no_lines_and_no_quote_is_rejected():
 def test_leading_slash_is_stripped():
     parsed = parse_citations([{"path": "/src/a.py", "start_line": 1, "end_line": 2}])
     assert parsed[0].path == "src/a.py"
+
+
+# ---------------------------------------------------------------------------
+# A line range glued onto the path
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("raw", [
+    "app.py 18-41",
+    "app.py:18-41",
+    "app.py#L18-L41",
+    "app.py (lines 18-41)",
+    "app.py lines 18 to 41",
+])
+def test_range_glued_to_the_path_is_split_off(raw):
+    """Observed live: `"path": "app.py 18-41"` was rejected as 'not a file'."""
+    parsed = parse_citations([{"path": raw}])
+
+    assert parsed[0].path == "app.py"
+    assert (parsed[0].start_line, parsed[0].end_line) == (18, 41)
+
+
+def test_split_range_verifies_against_the_real_file(tmp_path):
+    index = _index(tmp_path)
+    parsed = parse_citations([{"path": "mod.py 2-3"}])
+
+    verified, rejected = validate_citations(parsed, index)
+
+    assert rejected == []
+    assert verified[0]["path"] == "mod.py"
+    assert verified[0]["quote"].startswith("line two")
+
+
+def test_explicit_line_fields_win_over_a_glued_range():
+    parsed = parse_citations([{
+        "path": "app.py 18-41", "start_line": 2, "end_line": 4,
+    }])
+
+    assert parsed[0].path == "app.py"
+    assert (parsed[0].start_line, parsed[0].end_line) == (2, 4)

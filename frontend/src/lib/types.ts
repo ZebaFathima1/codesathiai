@@ -30,6 +30,8 @@ export interface HealthStatus {
   }
   storage: {
     backend: string
+    /** True when the host keeps rows in a file that a restart will erase. */
+    ephemeral?: boolean
     max_stored_bytes: number
     upload_batch_bytes: number
   }
@@ -160,6 +162,31 @@ export interface KeyFile {
   role: string
 }
 
+/** The file/selection the user is looking at when they ask. */
+export interface AskFocus {
+  path: string
+  start_line?: number | null
+  end_line?: number | null
+}
+
+/**
+ * What the question was resolved against. `focus`, `previous` and `overview`
+ * are the fallbacks used when the wording names no symbol.
+ */
+export interface AskContext {
+  mode: 'question' | 'focus' | 'previous' | 'overview' | 'none'
+  path?: string
+  start_line?: number
+  end_line?: number
+  question?: string
+}
+
+/** A clickable starting point offered when a question cannot be grounded. */
+export interface AskSuggestion {
+  label: string
+  question: string
+}
+
 export interface AskResponse {
   project_id: string
   question: string
@@ -176,7 +203,10 @@ export interface AskResponse {
   model: string | null
   usage: { total_tokens?: number | null } | null
   structured: boolean
+  truncated?: boolean
   sarvam_called: boolean
+  context?: AskContext
+  suggestions?: AskSuggestion[]
 }
 
 export interface ChatTurn {

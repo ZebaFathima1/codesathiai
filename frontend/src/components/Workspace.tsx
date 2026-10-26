@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, PanelRight } from 'lucide-react'
 import { ChatPanel } from './ChatPanel'
 import { EvidencePanel } from './EvidencePanel'
@@ -10,6 +10,7 @@ import { UserMenu } from './UserMenu'
 import { api } from '../lib/api'
 import { describeError, useAuth } from '../hooks/useAuth'
 import type {
+  AskFocus,
   ChatTurn,
   EvidenceSnippet,
   FileContent,
@@ -171,6 +172,32 @@ export function Workspace({ health, onBackToLanding, onRequireAuth }: WorkspaceP
   )
 
   /* ---------------------------------------------------------------- ask */
+  /**
+   * What the next question is answered against: the file the user has open,
+   * or the exact lines they clicked through to. Sent with every question so
+   * "explain this" has a subject instead of arriving as search terms that
+   * match nothing.
+   */
+  const focus = useMemo<AskFocus | null>(() => {
+    if (!selectedPath) return null
+    if (selection && selection.path === selectedPath) {
+      return {
+        path: selectedPath,
+        start_line: selection.startLine,
+        end_line: selection.endLine,
+      }
+    }
+    return { path: selectedPath }
+  }, [selectedPath, selection])
+
+  const focusLabel = focus
+    ? focus.start_line
+      ? `${focus.path} · L${focus.start_line}–${focus.end_line}`
+      : focus.path
+    : null
+
+  const clearFocus = useCallback(() => setSelection(null), [])
+
   const runAsk = useCallback(
     async (question: string, existingTurnId?: string) => {
       if (!project) return
@@ -200,7 +227,7 @@ export function Workspace({ health, onBackToLanding, onRequireAuth }: WorkspaceP
       setAsking(true)
 
       try {
-        const response = await api.ask(project.project_id, question, language, history)
+        const response = await api.ask(project.project_id, question, language, history, focus)
         setTurns((prev) =>
           prev.map((t) => (t.id === turnId ? { ...t, status: 'done' as const, response } : t)),
         )
@@ -217,7 +244,7 @@ export function Workspace({ health, onBackToLanding, onRequireAuth }: WorkspaceP
         setAsking(false)
       }
     },
-    [project, turns, language, user, onRequireAuth],
+    [project, turns, language, user, onRequireAuth, focus],
   )
 
   const retryTurn = useCallback(
@@ -343,6 +370,8 @@ export function Workspace({ health, onBackToLanding, onRequireAuth }: WorkspaceP
             onDismissSessionError={() => setSessionError(null)}
             signedIn={Boolean(user)}
             onRequireAuth={onRequireAuth}
+            focusLabel={focusLabel}
+            onClearFocus={clearFocus}
           />
         </div>
 

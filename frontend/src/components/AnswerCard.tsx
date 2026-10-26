@@ -27,32 +27,36 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
 
   return (
     <article className="animate-fade-up space-y-3">
-      {/* Direct answer */}
-      <div className="panel p-4">
-        <div className="mb-2 flex items-center justify-between gap-2">
-          <span className="chip">
-            <FileCode2 className="h-3 w-3" />
-            AI interpretation
-          </span>
-          <button
-            type="button"
-            onClick={handleCopy}
-            className="btn-ghost !px-2 !py-1 text-xs"
-            aria-label="Copy answer"
-          >
-            {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
+      {/* Direct answer — or, when nothing could be grounded, a way forward */}
+      {response.sarvam_called ? (
+        <div className="panel p-4">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <span className="chip">
+              <FileCode2 className="h-3 w-3" />
+              AI interpretation
+            </span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="btn-ghost !px-2 !py-1 text-xs"
+              aria-label="Copy answer"
+            >
+              {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
 
-        {response.answer ? (
-          <Markdown>{response.answer}</Markdown>
-        ) : (
-          <p className="text-sm text-muted">
-            No direct answer was produced for this question.
-          </p>
-        )}
-      </div>
+          {response.answer ? (
+            <Markdown>{response.answer}</Markdown>
+          ) : (
+            <p className="text-sm text-muted">
+              The model returned no readable answer for this question.
+            </p>
+          )}
+        </div>
+      ) : (
+        <NoEvidenceCard response={response} onFollowup={onFollowup} />
+      )}
 
       {/* Steps */}
       {response.steps.length > 0 && (
@@ -99,7 +103,9 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
         </section>
       )}
 
-      {/* Verified citations */}
+      {/* Verified citations — only meaningful once the model was actually
+          called. When it was not, NoEvidenceCard above already explains why. */}
+      {response.sarvam_called && (
       <section className="panel p-4">
         <h4 className="mb-2.5 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
           <ShieldAlert className="h-3.5 w-3.5 text-success" />
@@ -146,6 +152,7 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
           </ul>
         )}
       </section>
+      )}
 
       {/* Rejected citations — shown for honesty, never as evidence */}
       {response.rejected_citations.length > 0 && (
@@ -171,8 +178,8 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
         </section>
       )}
 
-      {/* Uncertainty */}
-      {response.uncertainty && (
+      {/* Uncertainty — already stated by NoEvidenceCard when nothing was sent */}
+      {response.sarvam_called && response.uncertainty && (
         <section className="rounded-xl border border-warn/40 bg-warn/10 p-3.5">
           <h4 className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-warn">
             <HelpCircle className="h-3.5 w-3.5" />
@@ -197,7 +204,11 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
           </span>
         )}
         <span className={cn('font-medium', response.structured ? 'text-success' : 'text-warn')}>
-          {response.structured ? 'Structured output verified' : 'Unstructured output'}
+          {!response.sarvam_called
+            ? 'Not sent to the model'
+            : response.structured
+              ? 'Structured output verified'
+              : 'Unstructured output'}
         </span>
       </div>
 
@@ -217,5 +228,55 @@ export function AnswerCard({ response, onOpenCitation, onFollowup }: AnswerCardP
         </div>
       )}
     </article>
+  )
+}
+
+/**
+ * Shown when the question could not be grounded in any code.
+ *
+ * An empty "AI interpretation" panel reads like a model failure, but in this
+ * state nothing was sent to the model at all — the wording named no symbol.
+ * Saying that plainly, and offering clickable starting points taken from the
+ * repository's own symbols, is more useful than a dead end.
+ */
+function NoEvidenceCard({
+  response,
+  onFollowup,
+}: {
+  response: AskResponse
+  onFollowup: (question: string) => void
+}) {
+  const suggestions = response.suggestions ?? []
+
+  return (
+    <section className="panel border-warn/40 p-4">
+      <div className="flex items-center gap-2">
+        <HelpCircle className="h-4 w-4 text-warn" />
+        <h4 className="text-sm font-semibold">I need something more specific</h4>
+      </div>
+      <p className="mt-1.5 text-sm leading-relaxed text-muted">
+        {response.uncertainty || 'That question did not match any code in this project.'}
+      </p>
+
+      {suggestions.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">
+            Ask about something in this project
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {suggestions.map((s) => (
+              <button
+                key={s.question}
+                type="button"
+                onClick={() => onFollowup(s.question)}
+                className="chip transition-colors hover:border-brand/50 hover:text-ink"
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   )
 }

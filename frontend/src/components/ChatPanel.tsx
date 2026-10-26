@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { CornerDownLeft, Loader2, Lock, MessageSquareCode, Send, Sparkles } from 'lucide-react'
+import {
+  CornerDownLeft,
+  FileCode2,
+  Loader2,
+  Lock,
+  MessageSquareCode,
+  Send,
+  Sparkles,
+  X,
+} from 'lucide-react'
 import { AnswerCard } from './AnswerCard'
-import { ErrorBanner, WarnNote } from './Feedback'
+import { ErrorBanner, InfoNote, WarnNote } from './Feedback'
 import { Logo } from './Logo'
 import type { ChatTurn, HealthStatus, LanguageCode, LanguageOption, ProjectSummary } from '../lib/types'
 import { LANGUAGES } from '../lib/types'
@@ -25,6 +34,9 @@ interface ChatPanelProps {
   /** Asking requires an account; browsing does not. */
   signedIn: boolean
   onRequireAuth: () => void
+  /** The file (or selection) an anaphoric question will be answered against. */
+  focusLabel: string | null
+  onClearFocus: () => void
 }
 
 const EXAMPLE_PROMPTS: { label: string; question: string; language: LanguageCode }[] = [
@@ -53,6 +65,8 @@ export function ChatPanel({
   onDismissSessionError,
   signedIn,
   onRequireAuth,
+  focusLabel,
+  onClearFocus,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -136,6 +150,7 @@ export function ChatPanel({
         {!project ? (
           <WelcomeState
             sarvamReady={sarvamReady}
+            ephemeralStorage={health?.storage.ephemeral ?? false}
             onUploadClick={onUploadClick}
             onLoadSample={onLoadSample}
             signedIn={signedIn}
@@ -241,6 +256,23 @@ export function ChatPanel({
 
       <footer className="border-t border-line bg-surface p-3">
         <div className="mx-auto max-w-3xl">
+          {project && focusLabel && (
+            <div className="mb-1.5 flex items-center gap-2">
+              <span className="chip max-w-full gap-1.5 !border-brand/40 !bg-brand/10">
+                <FileCode2 className="h-3 w-3 shrink-0 text-glow" />
+                <span className="truncate font-mono text-[11px] text-ink">{focusLabel}</span>
+                <button
+                  type="button"
+                  onClick={onClearFocus}
+                  className="ml-0.5 rounded p-0.5 text-muted transition-colors hover:text-ink"
+                  aria-label="Ask about the whole project instead"
+                  title="Ask about the whole project instead"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <textarea
               ref={inputRef}
@@ -296,12 +328,14 @@ function SignInNote({ onRequireAuth }: { onRequireAuth: () => void }) {
 
 function WelcomeState({
   sarvamReady,
+  ephemeralStorage,
   onUploadClick,
   onLoadSample,
   signedIn,
   onRequireAuth,
 }: {
   sarvamReady: boolean
+  ephemeralStorage: boolean
   onUploadClick: () => void
   onLoadSample: () => void
   signedIn: boolean
@@ -355,6 +389,16 @@ function WelcomeState({
       {!signedIn && (
         <div className="w-full">
           <SignInNote onRequireAuth={onRequireAuth} />
+        </div>
+      )}
+
+      {ephemeralStorage && (
+        <div className="w-full">
+          <InfoNote>
+            This demo keeps accounts and uploads in temporary server storage. If
+            the app has been idle, you may need to sign in or upload again — the
+            sample project always reloads.
+          </InfoNote>
         </div>
       )}
     </div>

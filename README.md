@@ -383,6 +383,79 @@ cd path\to\codesathi-ai\frontend
 npm install
 ```
 
+## Deployed setup: Vercel frontend + Render API
+
+The public demo serves the frontend from Vercel and the API from Render. That
+split works only with the settings below. Skip them and the site still loads,
+but two failures appear that look like application bugs:
+
+- **every signed-in request returns 401** — a cross-site cookie is only sent
+  when it is `SameSite=None; Secure`, and the API cannot infer the frontend's
+  origin unless it is told;
+- **uploads fail with a 403 whose body is not JSON** — the browser is posting to
+  a proxy on the Vercel origin instead of to the API, so an edge layer answers
+  before Flask is ever reached.
+
+**On Render (the API):**
+
+| Variable | Value |
+| --- | --- |
+| `FRONTEND_ORIGINS` | `https://codesathiai.vercel.app` |
+| `DATABASE_URL` | optional — see *Running without a database* below |
+| `SARVAM_API_KEY` | your key, server-side only |
+
+`COOKIE_SAMESITE` needs no value: it is derived from `FRONTEND_ORIGINS`
+(`none` for a real deployment, `lax` on localhost), and `COOKIE_SECURE` follows
+it.
+
+### Running without a database
+
+`DATABASE_URL` is optional. Without it the API keeps everything in a SQLite
+file — accounts, sessions, uploaded projects and their files — so sign-in and
+uploads work with no setup at all. On a host with an ephemeral filesystem
+(Render's free tier) that file is erased whenever the instance restarts or wakes
+from sleep: every account, session and uploaded project disappears. Browsing
+still works because the sample project re-seeds itself on demand.
+
+In that state `GET /api/health` reports
+
+```json
+"storage": { "backend": "sqlite", "ephemeral": true }
+```
+
+and the workspace shows a note saying storage is temporary, so a signed-out
+visitor is not left guessing.
+
+Keeping SQLite *and* keeping the data needs a persistent disk (a paid Render
+instance), mounted at `/var/data`:
+
+```
+SQLITE_PATH=/var/data/codesathi.db
+```
+
+Keeping the data on a free tier needs Postgres instead, as above.
+
+**On Vercel (the frontend):**
+
+| Variable | Value |
+| --- | --- |
+| `VITE_API_BASE_URL` | `https://codesathiai-backend.onrender.com/api` |
+
+It is a **build-time** variable: set it, then redeploy. With it, the browser
+calls the API directly and the `rewrites` in `vercel.json` become unused.
+Without it, requests go to `/api` on the Vercel origin.
+
+```powershell
+# confirm the API is awake and pointed at Postgres, not SQLite
+curl https://codesathiai-backend.onrender.com/api/health
+
+# confirm the browser is talking to the API directly (Network tab):
+# POST https://codesathiai-backend.onrender.com/api/projects -> 201
+```
+
+A note on the free Render tier: an idle instance sleeps, so the first request
+after a pause takes 30-60 s and can fail in the UI. Wake it before a demo.
+
 ## Deploying to Vercel
 
 The repository is already configured for Vercel: `vercel.json`, a root

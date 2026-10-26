@@ -24,9 +24,33 @@ _WS_RE = re.compile(r"\s+")
 _RANGE_RE = re.compile(r"(\d+)\s*(?:-|–|—|to)\s*(\d+)")
 _SINGLE_RE = re.compile(r"(\d+)")
 
+# A line range glued onto the path instead of a separate field. Observed
+# against the live API: `"path": "app.py 18-41"`, which then failed validation
+# as "'app.py 18-41' is not a file in this project" even though the citation
+# was correct. The range is split off here so the citation can be checked.
+_TRAILING_RANGE_RE = re.compile(
+    r"[\s:#(]*(?:lines?\s*|[Ll])?(\d+)\s*(?:-|–|—|to)\s*[Ll]?(\d+)\s*\)?\s*$"
+)
+
 
 def _norm(text: str) -> str:
     return _WS_RE.sub(" ", (text or "").strip()).lower()
+
+
+def split_path_and_range(raw: str) -> tuple[str, int, int]:
+    """Separate a path from a line range glued onto it.
+
+    ``"app.py 18-41"``, ``"app.py:18-41"``, ``"app.py#L18-L41"`` and
+    ``"app.py (lines 18-41)"`` all describe the same citation; only the first
+    part is the path.
+    """
+    text = (raw or "").replace("\\", "/").strip()
+    match = _TRAILING_RANGE_RE.search(text)
+    if match and match.start() > 0:
+        cleaned = text[:match.start()].strip().rstrip(":(").strip()
+        if cleaned:
+            return cleaned.lstrip("/"), int(match.group(1)), int(match.group(2))
+    return text.lstrip("/"), 0, 0
 
 
 def _coerce_lines(item: dict) -> tuple[int, int]:
@@ -118,23 +142,25 @@ def parse_citations(raw) -> list[Citation]:
             # that actually look like a file reference, so stray prose in the
             # array is ignored rather than treated as a citation.
             text = item.strip()
-            match = _RANGE_RE.search(text)
-            path = text.split(":")[0].strip()
-            if not (match or "." in path):
+            path, start, end = split_path_and_range(text)
+            path = path.split(":")[0].strip()
+            if not (start or "." in path):
                 continue
             if path:
-                start, end = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
                 out.append(Citation(path=path, start_line=start, end_line=end))
             continue
         if not isinstance(item, dict):
             continue
-        path = str(
+        raw_path = str(
             item.get("path") or item.get("file") or item.get("filename")
             or item.get("file_path") or ""
         ).strip()
-        if not path:
+        if not raw_path:
             continue
+        path, path_start, path_end = split_path_and_range(raw_path)
         start, end = _coerce_lines(item)
+        if not start and path_start:
+            start, end = path_start, path_end
         quote = ""
         for key in ("quote", "snippet", "code", "text", "line_content", "excerpt"):
             value = item.get(key)

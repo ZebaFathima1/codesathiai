@@ -68,6 +68,28 @@ _OVERVIEW_WORDS = {"architecture", "structure", "overview", "project", "organiza
 # generic "entry point" and README nudges would return files for any query.
 MIN_SCORE = 2.0
 
+# Scores for the two fallback paths, which are chosen by context rather than by
+# matching a keyword. They sit above MIN_SCORE so the UI reports them as real
+# evidence, and the reason string explains where they came from.
+FOCUS_SCORE = 60.0
+OVERVIEW_SCORE = 12.0
+
+# A question made only of stopwords ("explain this") names no concept, so it
+# has to be interpreted. These hints mark the questions that are really about
+# the project as a whole, which the overview fallback can answer.
+_OVERVIEW_HINTS = (
+    "project", "repo", "repository", "codebase", "architecture", "overview",
+    "structure", "organis", "organiz", "summar", "entry point", "entrypoint",
+    "folder", "director", "tech stack", "technolog", "purpose", "use case",
+    "what does this", "what is this", "how is this", "tell me about this",
+)
+
+
+def looks_like_overview(question: str) -> bool:
+    """True when the question asks about the project rather than a symbol."""
+    lowered = (question or "").lower()
+    return any(hint in lowered for hint in _OVERVIEW_HINTS)
+
 # ...and it must be in the same league as the best match. Measured on a real
 # repository, a correct top hit scored 66 while seven irrelevant files scored
 # 16-34 purely for mentioning the word in prose. Sending all eight let the
@@ -151,11 +173,15 @@ class RetrievalResult:
     snippets: list[Snippet] = field(default_factory=list)
     terms: list[str] = field(default_factory=list)
     used_chars: int = 0
+    # Explains to the model what the snippets represent: the open file, the
+    # previous turn, or a project overview. Empty for an ordinary match.
+    note: str = ""
 
     def to_dict(self) -> dict:
         return {
             "terms": self.terms,
             "used_chars": self.used_chars,
+            "note": self.note,
             "snippets": [s.to_dict() for s in self.snippets],
         }
 
@@ -373,3 +399,162 @@ class Retriever:
 
         result.used_chars = used
         return result
+
+    # ------------------------------------------------------------------
+    # Context fallbacks
+    # ------------------------------------------------------------------
+    def retrieve_focus(self, path: str, start_line: int | None = None,
+                       end_line: int | None = None,
+                       max_snippets: int = 2,
+                       char_budget: int = CONTEXT_CHAR_BUDGET) -> RetrievalResult:
+        """Evidence for an anaphoric question such as "explain this".
+
+        The words carry no searchable term, so the code the user is actually
+        looking at — a selected range, or the file they have open — is what the
+        question refers to. The enclosing symbol is added when the selection is
+        only part of a function, so the model sees the whole unit.
+        """
+        focused = self.index.get(path)
+        result = RetrievalResult(terms=[])
+        if focused is None:
+            return result
+
+        symbol = None
+        if start_line is None or end_line is None:
+            first = focused.symbols[0] if focused.symbols else None
+            if first is not None and first.end_line - first.start_line + 1 <= SNIPPET_MAX_LINES:
+                start, end, symbol = first.start_line, first.end_line, first
+            else:
+                start, end = 1, min(focused.line_count, SNIPPET_MAX_LINES)
+            reason = "the file you have open"
+        else:
+            start = max(1, min(start_line, focused.line_count))
+            end = max(start, min(end_line, focused.line_count))
+            if end - start + 1 > SNIPPET_MAX_LINES:
+                end = start + SNIPPET_MAX_LINES - 1
+            symbol = next(
+                (s for s in focused.symbols if s.start_line <= start <= s.end_line),
+                None,
+            )
+            reason = "the lines you selected"
+
+        pairs = self.index.read_lines(focused.path, start, end)
+        if not pairs:
+            return result
+        code = "\n".join(text for _, text in pairs)
+        result.snippets.append(Snippet(
+            path=focused.path, start_line=start, end_line=end, code=code,
+            score=FOCUS_SCORE, reason=reason, language=focused.language,
+            symbol=symbol.name if symbol else None,
+        ))
+        used = len(code)
+
+        if (symbol is not None and len(result.snippets) < max_snippets
+                and used < char_budget):
+            outer_start = symbol.start_line
+            outer_end = min(symbol.end_line, outer_start + SNIPPET_MAX_LINES - 1)
+            if (outer_start, outer_end) != (start, end) and outer_end >= outer_start:
+                outer = self.index.read_lines(focused.path, outer_start, outer_end)
+                if outer:
+                    body = "\n".join(text for _, text in outer)
+                    result.snippets.append(Snippet(
+                        path=focused.path, start_line=outer_start, end_line=outer_end,
+                        code=body, score=FOCUS_SCORE - 1.0,
+                        reason=f"the enclosing {symbol.kind} '{symbol.name}'",
+                        language=focused.language, symbol=symbol.name,
+                    ))
+                    used += len(body)
+
+        result.used_chars = used
+        return result
+
+    def retrieve_overview(self, max_snippets: int = 4,
+                          char_budget: int = CONTEXT_CHAR_BUDGET) -> RetrievalResult:
+        """Evidence for a project-level question that matched no keyword.
+
+        A README, the entry points and the files richest in symbols are what
+        make a repository describable when the question names no symbol at all.
+        """
+        result = RetrievalResult(terms=[])
+
+        def rank(f: IndexedFile) -> float:
+            lower = f.path.lower()
+            stem = lower.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+            score = 0.0
+            if stem.startswith("readme") or lower.endswith((".md", ".rst")):
+                score += 30.0
+            if any(hint in stem for hint in _ENTRYPOINT_HINTS):
+                score += 20.0
+            if classify_role(f.path) == "config":
+                score += 4.0
+            score += min(len(f.symbols), 8) * 1.5
+            if f.language == "Python":
+                score += 1.0
+            return score
+
+        ranked = sorted(self.index.files.values(), key=lambda f: (-rank(f), f.path))
+        used = 0
+        for f in ranked:
+            if len(result.snippets) >= max_snippets or used >= char_budget:
+                break
+            if rank(f) <= 1.5:
+                continue
+            first = f.symbols[0] if f.symbols else None
+            if first is not None:
+                start = first.start_line
+                end = min(first.end_line, start + SNIPPET_MAX_LINES - 1)
+                reason = f"project overview: {first.kind} '{first.name}'"
+            else:
+                start, end = 1, min(f.line_count, 30)
+                reason = "project overview"
+            pairs = self.index.read_lines(f.path, start, end)
+            if not pairs:
+                continue
+            code = "\n".join(text for _, text in pairs)
+            result.snippets.append(Snippet(
+                path=f.path, start_line=start, end_line=end, code=code,
+                score=OVERVIEW_SCORE, reason=reason, language=f.language,
+                symbol=first.name if first else None,
+            ))
+            used += len(code)
+
+        result.used_chars = used
+        return result
+
+    def suggestions(self, limit: int = 4) -> list[dict]:
+        """Clickable starting points built from this repository's own symbols.
+
+        Returned with every answer, so a question that cannot be grounded ends
+        with something the user can click instead of a dead end.
+        """
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        def add(label: str, question: str, key: str) -> bool:
+            if key in seen or len(out) >= limit:
+                return False
+            seen.add(key)
+            out.append({"label": label, "question": question})
+            return True
+
+        for f in sorted(self.index.files.values(), key=lambda x: x.path):
+            for sym in f.symbols:
+                if sym.kind not in {"function", "class", "method", "route"}:
+                    continue
+                if len(sym.name) < 3 or sym.name.startswith("_"):
+                    continue
+                add(f"How does {sym.name}() work?",
+                    f"How does {sym.name}() work in {f.path}?", sym.name.lower())
+                if len(out) >= limit:
+                    return out
+
+        for f in sorted(self.index.files.values(), key=lambda x: x.path):
+            if classify_role(f.path) == "docs":
+                continue
+            filename = f.path.rsplit("/", 1)[-1]
+            add(f"What does {filename} do?", f"What does {f.path} do?", f.path)
+            if len(out) >= limit:
+                return out
+
+        add("What does this project do?", "What does this project do?", "__overview__")
+        return out

@@ -91,10 +91,43 @@ SESSION_TTL_DAYS = _env_int("SESSION_TTL_DAYS", 30)
 OAUTH_STATE_COOKIE = "codesathi_oauth_state"
 OAUTH_STATE_TTL_SECONDS = 600
 
+# Origins allowed by CORS. Also decides the cookie policy below, so it is
+# defined before the cookie settings.
+FRONTEND_ORIGINS = _env_list(
+    "FRONTEND_ORIGINS",
+    ["http://localhost:5173", "http://127.0.0.1:5173"],
+)
+
+
+def _is_external_origin(origin: str) -> bool:
+    """True for an origin that is not this machine (a real deployment)."""
+    host = origin.split("://", 1)[-1].split("/", 1)[0].rsplit("@", 1)[-1]
+    host = host.rsplit(":", 1)[0].strip("[]").lower()
+    return host not in {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+# When the frontend and the API share one origin (local Vite proxy, or a
+# single Vercel deployment) the browser sends the session cookie as long as it
+# is not Secure-only over plain HTTP. But when the frontend is served from a
+# different origin than the API — e.g. Vercel frontend + Render API — browsers
+# refuse to attach the cookie unless it is `SameSite=None; Secure`. That
+# distinction is derived here so neither deployment has to hand-tune it, and
+# `COOKIE_SAMESITE` overrides it when a setup is unusual.
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "").strip().lower() or (
+    "none" if any(_is_external_origin(o) for o in FRONTEND_ORIGINS) else "lax"
+)
+
 # A cookie marked Secure is not sent over plain HTTP, so it must be off for
-# local development and on for any real deployment. Vercel sets VERCEL=1.
-COOKIE_SECURE = _env_bool("COOKIE_SECURE", bool(os.environ.get("VERCEL")) or
-                          os.environ.get("FLASK_DEBUG", "1") != "1")
+# local HTTP development and on for any real deployment. VERCEL and RENDER are
+# set by those platforms; the flag is also forced on when SameSite=None, which
+# browsers only honour together with Secure.
+COOKIE_SECURE = _env_bool(
+    "COOKIE_SECURE",
+    bool(os.environ.get("VERCEL"))
+    or bool(os.environ.get("RENDER"))
+    or COOKIE_SAMESITE == "none"
+    or os.environ.get("FLASK_DEBUG", "1") != "1",
+)
 
 # Google sign-in. Optional: the app runs fine without it, and the endpoint
 # reports that it is unavailable rather than failing obscurely.
@@ -117,10 +150,6 @@ UPLOAD_BATCH_BYTES = _env_int("UPLOAD_BATCH_BYTES", 3 * 1024 * 1024)
 # --------------------------------------------------------------------------
 # Server
 # --------------------------------------------------------------------------
-FRONTEND_ORIGINS = _env_list(
-    "FRONTEND_ORIGINS",
-    ["http://localhost:5173", "http://127.0.0.1:5173"],
-)
 RATE_LIMIT_PER_MINUTE = _env_int("RATE_LIMIT_PER_MINUTE", 30)
 # Sign-in and sign-up get a much tighter budget than ordinary reads,
 # so credentials cannot be brute-forced at request speed.
@@ -149,6 +178,8 @@ class Settings:
     context_char_budget: int = CONTEXT_CHAR_BUDGET
     max_snippets: int = MAX_SNIPPETS
     frontend_origins: list[str] = field(default_factory=lambda: list(FRONTEND_ORIGINS))
+    cookie_secure: bool = COOKIE_SECURE
+    cookie_samesite: str = COOKIE_SAMESITE
 
     @property
     def sarvam_configured(self) -> bool:

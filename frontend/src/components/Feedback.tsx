@@ -51,7 +51,7 @@ function hintForCode(code: string): string | undefined {
     case 'network_error':
       return 'Start the backend with `python run.py` inside backend/.'
     case 'project_not_found':
-      return 'The project expired or was deleted — upload it again.'
+      return 'The project expired or was deleted — upload it again. A demo server with temporary storage also loses it when it restarts.'
     default:
       return undefined
   }

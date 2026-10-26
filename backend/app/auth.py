@@ -185,7 +185,7 @@ def set_session_cookie(response: Response, token: str) -> Response:
         max_age=config.SESSION_TTL_DAYS * 24 * 3600,
         httponly=True,
         secure=config.COOKIE_SECURE,
-        samesite="Lax",
+        samesite=config.COOKIE_SAMESITE,
         path="/",
     )
     return response
@@ -196,7 +196,7 @@ def clear_session_cookie(response: Response) -> Response:
         config.SESSION_COOKIE_NAME,
         httponly=True,
         secure=config.COOKIE_SECURE,
-        samesite="Lax",
+        samesite=config.COOKIE_SAMESITE,
         path="/",
     )
     return response

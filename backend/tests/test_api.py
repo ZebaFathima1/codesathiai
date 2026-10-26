@@ -56,6 +56,16 @@ def test_health_reports_configured_when_key_present(client, configured_key):
     assert client.get("/api/health").get_json()["sarvam"]["configured"] is True
 
 
+def test_health_flags_ephemeral_storage_only_on_a_host(client, monkeypatch):
+    """A local SQLite file persists; one on a host does not, and the UI says so."""
+    storage = client.get("/api/health").get_json()["storage"]
+    assert storage["backend"].startswith("sqlite")
+    assert storage["ephemeral"] is False
+
+    monkeypatch.setenv("RENDER", "1")
+    assert client.get("/api/health").get_json()["storage"]["ephemeral"] is True
+
+
 # ---------------------------------------------------------------------------
 # Sample project
 # ---------------------------------------------------------------------------

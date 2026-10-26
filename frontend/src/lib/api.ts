@@ -8,6 +8,7 @@
  * own human-readable message and error code.
  */
 import type {
+  AskFocus,
   AskResponse,
   AuthStatus,
   FileContent,
@@ -20,7 +21,15 @@ import type {
 import type { ExtractedFile } from './zip'
 import { batchFiles } from './zip'
 
-const BASE = '/api'
+/**
+ * Where the API lives.
+ *
+ * Defaults to the same origin (`/api`), which is what the Vite dev proxy and a
+ * single Vercel deployment both provide. When the backend is hosted separately
+ * — the Render deployment, for instance — set `VITE_API_BASE_URL` at build
+ * time to its absolute URL; the browser then talks to it directly.
+ */
+const BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/+$/, '')
 
 export class ApiError extends Error {
   code: string
@@ -63,8 +72,14 @@ export class ApiError extends Error {
         return 'Try a smaller repository, or exclude dependencies and build output.'
       case 'google_not_configured':
         return 'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the deployment.'
+      case 'request_failed':
+        return this.status === 403
+          ? 'Something in front of the API blocked the request. Check VITE_API_BASE_URL and the backend FRONTEND_ORIGINS.'
+          : undefined
       default:
-        return undefined
+        return this.status === 403
+          ? 'Check VITE_API_BASE_URL and the backend CORS origins for this deployment.'
+          : undefined
     }
   }
 }
@@ -155,6 +170,11 @@ export const api = {
     return `${BASE}/auth/google/start`
   },
 
+  /** Where the API is mounted, for diagnostics in the UI. */
+  baseUrl(): string {
+    return BASE
+  },
+
   /* ------------------------------------------------------------ projects */
   listProjects(): Promise<ProjectSummary[]> {
     return request<{ projects: ProjectSummary[] }>('/projects').then((r) => r.projects)
@@ -227,16 +247,26 @@ export const api = {
     return request<FileContent>(`/projects/${projectId}/file?${params.toString()}`)
   },
 
+  /**
+   * Ask about the code.
+   *
+   * `focus` carries the file (and optional selection) the user has open, so a
+   * question like "explain this" has something to point at instead of arriving
+   * as a set of words that match no symbol.
+   */
   ask(
     projectId: string,
     question: string,
     language: LanguageCode,
     history: { role: string; content: string }[],
+    focus?: AskFocus | null,
   ): Promise<AskResponse> {
+    const payload: Record<string, unknown> = { question, language, history }
+    if (focus && focus.path) payload.focus = focus
     return request<AskResponse>(`/projects/${projectId}/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, language, history }),
+      body: JSON.stringify(payload),
     })
   },
 
